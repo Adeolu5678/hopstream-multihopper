@@ -1,11 +1,12 @@
 :root {
   color-scheme: dark;
   --bg: #070b12;
-  --surface: #0e1522;
-  --surface-elevated: #141e30;
-  --border: #233049;
-  --text: #e8eef9;
-  --muted: #8ea0be;
+  --surface: #0b1120;
+  --surface-elevated: #121b2d;
+  --border: #2a3a56;
+  --text: #f1f5f9;
+  --muted: #a6b6d0;
+  --label: #bccae0;
   --accent: #38bdf8;
   --emerald: #10b981;
   --amber: #f59e0b;
@@ -26,6 +27,11 @@ body {
   font-family: var(--sans);
   font-size: 14px;
   line-height: 1.5;
+}
+
+::placeholder {
+  color: #7e92b3;
+  opacity: 1;
 }
 
 .app-shell {
@@ -56,6 +62,7 @@ body {
   margin: 4px 0 0;
   color: var(--muted);
   font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
 .controls-bar {
@@ -67,6 +74,8 @@ body {
 
 .pill-toggle {
   display: inline-flex;
+  flex-wrap: wrap;
+  max-width: 100%;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -77,12 +86,18 @@ body {
 .pill-toggle button {
   border: none;
   background: transparent;
-  color: var(--muted);
+  color: var(--label);
   padding: 6px 12px;
   border-radius: 6px;
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.pill-toggle button:hover:not(.active) {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .pill-toggle button.active {
@@ -101,6 +116,8 @@ body {
   padding: 8px 10px;
   font-family: inherit;
   font-size: 13px;
+  width: 100%;
+  min-width: 0;
 }
 
 .input.mono,
@@ -125,6 +142,7 @@ body {
   cursor: pointer;
   font-size: 13px;
   font-weight: 600;
+  white-space: nowrap;
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 
@@ -133,8 +151,15 @@ body {
 }
 
 .btn:disabled {
-  opacity: 0.45;
+  opacity: 0.65;
+  color: #9eb0cb;
   cursor: not-allowed;
+}
+
+.btn-xs {
+  padding: 4px 9px;
+  font-size: 11px;
+  border-radius: 6px;
 }
 
 .btn-primary {
@@ -155,7 +180,7 @@ body {
 
 .btn-danger {
   background: transparent;
-  border-color: rgba(244, 63, 94, 0.45);
+  border-color: rgba(244, 63, 94, 0.5);
   color: #fda4af;
 }
 
@@ -169,24 +194,46 @@ body {
 .nav-tab {
   border: 1px solid var(--border);
   background: var(--surface);
-  color: var(--muted);
+  color: var(--label);
   padding: 8px 14px;
   border-radius: 8px;
   cursor: pointer;
   font-weight: 600;
   font-size: 13px;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.nav-tab:hover:not(.active) {
+  color: var(--text);
+  border-color: #3d5278;
+  background: var(--surface-elevated);
 }
 
 .nav-tab.active {
   color: var(--text);
   border-color: var(--accent);
-  background: rgba(56, 189, 248, 0.1);
+  background: rgba(56, 189, 248, 0.12);
 }
 
 .grid-2 {
   display: grid;
   grid-template-columns: 1.25fr 0.95fr;
   gap: 18px;
+  align-items: start;
+}
+
+.grid-2-templates {
+  display: grid;
+  grid-template-columns: 1fr 1.15fr;
+  gap: 18px;
+  align-items: start;
+}
+
+.grid-2-even {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+  align-items: start;
 }
 
 .grid-3 {
@@ -195,8 +242,15 @@ body {
   gap: 14px;
 }
 
+@media (max-width: 1080px) {
+  .grid-2-templates {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 960px) {
   .grid-2,
+  .grid-2-even,
   .grid-3 {
     grid-template-columns: 1fr;
   }
@@ -207,12 +261,29 @@ body {
   border: 1px solid var(--border);
   border-radius: 12px;
   padding: 18px;
+  min-width: 0;
 }
 
 .card h2,
 .card h3 {
   margin: 0 0 12px;
   font-size: 16px;
+}
+
+.section-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.section-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 16px;
 }
 
 .field-row {
@@ -222,46 +293,62 @@ body {
   margin-bottom: 12px;
 }
 
+.template-form-row {
+  display: grid;
+  grid-template-columns: minmax(170px, 0.75fr) minmax(240px, 1.55fr);
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
 .field {
   display: flex;
   flex-direction: column;
   gap: 5px;
+  min-width: 0;
 }
 
 .field label {
   font-size: 12px;
   font-weight: 600;
-  color: var(--muted);
+  color: var(--label);
 }
 
 .badge {
   display: inline-flex;
   align-items: center;
-  padding: 2px 8px;
+  padding: 3px 9px;
   border-radius: 999px;
   font-size: 11px;
   font-weight: 600;
   font-family: var(--mono);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .badge-info {
-  background: rgba(56, 189, 248, 0.15);
+  background: rgba(56, 189, 248, 0.16);
   color: #7dd3fc;
 }
 
 .badge-ok {
-  background: rgba(16, 185, 129, 0.15);
+  background: rgba(16, 185, 129, 0.16);
   color: #6ee7b7;
 }
 
 .badge-warn {
-  background: rgba(245, 158, 11, 0.16);
+  background: rgba(245, 158, 11, 0.18);
   color: #fcd34d;
 }
 
 .badge-err {
-  background: rgba(244, 63, 94, 0.16);
+  background: rgba(244, 63, 94, 0.18);
   color: #fda4af;
+}
+
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .table {
@@ -273,13 +360,139 @@ body {
 .table th,
 .table td {
   text-align: left;
-  padding: 8px 6px;
+  padding: 9px 8px;
   border-bottom: 1px solid var(--border);
+  vertical-align: top;
 }
 
 .table th {
-  color: var(--muted);
+  color: var(--label);
   font-weight: 600;
+  white-space: nowrap;
+}
+
+.nowrap {
+  white-space: nowrap;
+}
+
+.template-desc {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.4;
+  margin-top: 3px;
+  min-width: 190px;
+}
+
+.pubkey-cell {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 220px;
+}
+
+.pubkey-text {
+  display: inline-block;
+  max-width: 245px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.destinations-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.destinations-header {
+  display: grid;
+  grid-template-columns: 145px minmax(0, 1fr) 105px 56px;
+  gap: 8px;
+  padding: 6px 0 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--label);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.destination-row {
+  display: grid;
+  grid-template-columns: 145px minmax(0, 1fr) 105px 56px;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.destination-label,
+.destination-wallet,
+.destination-amount,
+.destination-actions {
+  min-width: 0;
+}
+
+.mobile-field-label {
+  display: none;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--label);
+  margin-bottom: 4px;
+}
+
+@media (max-width: 720px) {
+  .app-shell {
+    padding: 16px 12px 44px;
+  }
+
+  .card {
+    padding: 14px;
+  }
+
+  .template-form-row {
+    grid-template-columns: 1fr;
+  }
+
+  .destinations-header {
+    display: none;
+  }
+
+  .destinations-list {
+    gap: 10px;
+  }
+
+  .destination-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "label action"
+      "wallet wallet"
+      "amount amount";
+    gap: 10px;
+    padding: 12px;
+    background: var(--surface-elevated);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+  }
+
+  .destination-label {
+    grid-area: label;
+  }
+
+  .destination-actions {
+    grid-area: action;
+    align-self: end;
+  }
+
+  .destination-wallet {
+    grid-area: wallet;
+  }
+
+  .destination-amount {
+    grid-area: amount;
+  }
+
+  .mobile-field-label {
+    display: block;
+  }
 }
 
 .mono {
@@ -297,6 +510,12 @@ body {
   background: var(--surface-elevated);
   font-size: 12px;
   margin-bottom: 12px;
+}
+
+.alert-ok {
+  border-color: rgba(16, 185, 129, 0.5);
+  background: rgba(16, 185, 129, 0.1);
+  color: #a7f3d0;
 }
 
 .alert-warn {
@@ -351,4 +570,37 @@ body {
   font-size: 11px;
   max-height: 240px;
   overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+
+.kv-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+@media (max-width: 520px) {
+  .kv-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.kv-item {
+  background: var(--surface-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.kv-label {
+  font-size: 11px;
+  color: var(--muted);
+  margin-bottom: 2px;
+}
+
+.kv-value {
+  font-size: 13px;
+  font-weight: 600;
+  word-break: break-word;
 }

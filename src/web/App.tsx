@@ -1,9 +1,8 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { MultiHopperApiError, MultiHopperValidationError } from "../client/errors.js";
 import { MultiHopperClient, validateCreateTransferRequest } from "../client/multihopper.js";
 import {
   formatRawToTokens,
-  parseTokenAmountToRaw,
   planPayrollTranches,
   type PayrollRecipient
 } from "../scheduler/batchRunner.js";
@@ -44,6 +43,13 @@ interface PipelineStage {
   signature?: string;
 }
 
+interface WebhookVerifyState {
+  ok: boolean;
+  expected: string;
+  provided: string;
+  isSample: boolean;
+}
+
 const INITIAL_PIPELINE: PipelineStage[] = [
   { id: "estimate", title: "1. POST /transfers/estimate", detail: "Fee tier, 50/50 rev-share & TRM budget", status: "pending" },
   { id: "create", title: "2. POST /transfers", detail: "Lock quote & destination share commitment", status: "pending" },
@@ -52,6 +58,25 @@ const INITIAL_PIPELINE: PipelineStage[] = [
   { id: "bundle", title: "5. route -> orchestrator -> session -> dispersion", detail: "Broadcast in strict order + confirm-broadcast", status: "pending" },
   { id: "settle", title: "6. TRM Verify & Destination Payouts", detail: "Poll GET /transfers/:id until settled", status: "pending" }
 ];
+
+const DEFAULT_WEBHOOK_SECRET = "whsec_demo_hopstream_secret_2026";
+const DEFAULT_WEBHOOK_EVENT: WebhookEventType = "transfer.completed";
+const DEFAULT_WEBHOOK_PAYLOAD = JSON.stringify(
+  {
+    id: "evt_019a2f",
+    event: "transfer.completed",
+    timestamp: "2026-11-25T16:00:00.000Z",
+    data: {
+      transferId: 1042,
+      externalId: "hopstream-payroll-001",
+      status: "completed",
+      phase: "settled",
+      destinationCount: 4
+    }
+  },
+  null,
+  2
+);
 
 function lamportsToSol(lamports: number): string {
   return (lamports / 1_000_000_000).toFixed(6);
@@ -91,35 +116,40 @@ export function App(): React.ReactElement {
   const [hopLibrary, setHopLibrary] = useState<HopLibraryResponse>(DEMO_HOP_LIBRARY);
   const [newTemplateName, setNewTemplateName] = useState<string>("dao-biweekly-payroll");
   const [newTemplateDesc, setNewTemplateDesc] = useState<string>("3-hop privacy pipeline for contributor payouts");
+  const [copiedValue, setCopiedValue] = useState<string | null>(null);
 
   // Usage state
   const [usage, setUsage] = useState<UsageResponse>(DEMO_USAGE);
 
   // Webhook inspector state
-  const [webhookSecret, setWebhookSecret] = useState<string>("whsec_demo_hopstream_secret_2026");
-  const [webhookEvent, setWebhookEvent] = useState<WebhookEventType>("transfer.completed");
-  const [webhookPayloadText, setWebhookPayloadText] = useState<string>(
-    JSON.stringify(
-      {
-        id: "evt_019a2f",
-        event: "transfer.completed",
-        timestamp: "2026-11-25T16:00:00.000Z",
-        data: {
-          transferId: 1042,
-          externalId: "hopstream-payroll-001",
-          status: "completed",
-          phase: "settled",
-          destinationCount: 4
-        }
-      },
-      null,
-      2
-    )
-  );
+  const [webhookSecret, setWebhookSecret] = useState<string>(DEFAULT_WEBHOOK_SECRET);
+  const [webhookEvent, setWebhookEvent] = useState<WebhookEventType>(DEFAULT_WEBHOOK_EVENT);
+  const [webhookPayloadText, setWebhookPayloadText] = useState<string>(DEFAULT_WEBHOOK_PAYLOAD);
   const [webhookSignatureInput, setWebhookSignatureInput] = useState<string>("");
-  const [webhookVerifyResult, setWebhookVerifyResult] = useState<{ ok: boolean; expected: string } | null>(null);
+  const [webhookVerifyResult, setWebhookVerifyResult] = useState<WebhookVerifyState | null>(null);
 
   const selectedMint = COMMON_SOLANA_MINTS[tokenKey];
+
+  useEffect(() => {
+    let cancelled = false;
+    computeHmacSha256HexBrowser(DEFAULT_WEBHOOK_PAYLOAD, DEFAULT_WEBHOOK_SECRET)
+      .then((expected) => {
+        if (!cancelled) {
+          setWebhookVerifyResult({
+            ok: true,
+            expected,
+            provided: expected,
+            isSample: true
+          });
+        }
+      })
+      .catch(() => {
+        // Ignore if SubtleCrypto is unavailable in a restricted context
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const client = useMemo(() => {
     if (mode !== "live") return null;
@@ -169,6 +199,60 @@ export function App(): React.ReactElement {
       .reduce((acc, r) => acc + (Number(r.amountTokens) || 0), 0)
       .toFixed(selectedMint.decimals === 9 ? 4 : 2);
   }, [recipients, selectedMint.decimals]);
+
+  const parsedWebhookPreview = useMemo(() => {
+    try {
+      const parsed = JSON.parse(webhookPayloadText) as {
+        id?: string;
+        event?: string;
+        timestamp?: string;
+        data?: {
+          transferId?: number | string;
+          externalId?: string;
+          status?: string;
+          phase?: string;
+          destinationCount?: number;
+        };
+      };
+      return {
+        validJson: true,
+        id: parsed.id ?? "—",
+        event: parsed.event ?? webhookEvent,
+        timestamp: parsed.timestamp ?? "—",
+        transferId: parsed.data?.transferId != null ? `#${parsed.data.transferId}` : "—",
+        externalId: parsed.data?.externalId ?? "—",
+        statusPhase:
+          parsed.data?.status || parsed.data?.phase
+            ? `${parsed.data?.status ?? "—"} / ${parsed.data?.phase ?? "—"}`
+            : "—",
+        destinationCount:
+          parsed.data?.destinationCount != null ? String(parsed.data.destinationCount) : "—"
+      };
+    } catch {
+      return {
+        validJson: false,
+        id: "Invalid JSON",
+        event: webhookEvent,
+        timestamp: "—",
+        transferId: "—",
+        externalId: "—",
+        statusPhase: "—",
+        destinationCount: "—"
+      };
+    }
+  }, [webhookEvent, webhookPayloadText]);
+
+  const handleCopyText = async (value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopiedValue(value);
+      setTimeout(() => {
+        setCopiedValue((prev) => (prev === value ? null : prev));
+      }, 1500);
+    } catch {
+      // Clipboard API may be unavailable in non-secure environments
+    }
+  };
 
   const appendLog = (line: string) => {
     setLogs((prev) => [`[${new Date().toISOString().slice(11, 19)}] ${line}`, ...prev]);
@@ -394,9 +478,27 @@ export function App(): React.ReactElement {
     }
     setWebhookVerifyResult({
       ok: sigToCheck.toLowerCase() === expected.toLowerCase(),
-      expected
+      expected,
+      provided: sigToCheck,
+      isSample: false
     });
   };
+
+  const handleResetWebhookSample = async () => {
+    setWebhookSecret(DEFAULT_WEBHOOK_SECRET);
+    setWebhookEvent(DEFAULT_WEBHOOK_EVENT);
+    setWebhookPayloadText(DEFAULT_WEBHOOK_PAYLOAD);
+    setWebhookSignatureInput("");
+    const expected = await computeHmacSha256HexBrowser(DEFAULT_WEBHOOK_PAYLOAD, DEFAULT_WEBHOOK_SECRET);
+    setWebhookVerifyResult({
+      ok: true,
+      expected,
+      provided: expected,
+      isSample: true
+    });
+  };
+
+  const isSimulatedOrDevnet = mode === "simulator" || environment === "devnet" || usage.isTestMode;
 
   return (
     <div className="app-shell">
@@ -449,7 +551,7 @@ export function App(): React.ReactElement {
             <input
               type="password"
               className="input mono"
-              style={{ width: 220 }}
+              style={{ width: 220, maxWidth: "100%" }}
               placeholder={environment === "devnet" ? "mh_test_..." : "mh_live_..."}
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
@@ -506,219 +608,219 @@ export function App(): React.ReactElement {
       </nav>
 
       {activeTab === "composer" && (
-        <div className="grid-2">
-          <div className="card">
-            <h2>Treasury Multi-Destination Batch ({recipients.length}/{MAX_DESTINATIONS_PER_TRANSFER} per tranche)</h2>
+        <>
+          <div className="grid-2">
+            <div className="card">
+              <h2>Treasury Multi-Destination Batch ({recipients.length}/{MAX_DESTINATIONS_PER_TRANSFER} per tranche)</h2>
 
-            <div className="field-row">
-              <div className="field">
-                <label>Token Asset</label>
-                <select
-                  className="select"
-                  value={tokenKey}
-                  onChange={(e) => setTokenKey(e.target.value as "USDC" | "USDC_DEVNET" | "SOL")}
-                >
-                  <option value="USDC_DEVNET">USDC (Devnet)</option>
-                  <option value="USDC">USDC (Mainnet)</option>
-                  <option value="SOL">Native SOL</option>
-                </select>
-              </div>
-              <div className="field">
-                <label>External Idempotency ID</label>
-                <input
-                  className="input mono"
-                  value={externalId}
-                  onChange={(e) => setExternalId(e.target.value)}
-                />
-              </div>
-              <div className="field">
-                <label>Routing Strategy</label>
-                <select
-                  className="select"
-                  value={routingMode}
-                  onChange={(e) => setRoutingMode(e.target.value as RoutingMode)}
-                >
-                  <option value="auto">Auto Hops (3–10)</option>
-                  <option value="template">Saved Route Template</option>
-                  <option value="custom">Custom Route Hops</option>
-                </select>
-              </div>
-            </div>
-
-            <div className="field" style={{ marginBottom: 12 }}>
-              <label>Source Owner Wallet (Signer &amp; Fee Payer)</label>
-              <input
-                className="input mono"
-                value={sourceOwner}
-                onChange={(e) => setSourceOwner(e.target.value)}
-              />
-            </div>
-
-            {routingMode === "auto" && (
               <div className="field-row">
                 <div className="field">
-                  <label>Abstraction Hops (3–10)</label>
+                  <label>Token Asset</label>
+                  <select
+                    className="select"
+                    value={tokenKey}
+                    onChange={(e) => setTokenKey(e.target.value as "USDC" | "USDC_DEVNET" | "SOL")}
+                  >
+                    <option value="USDC_DEVNET">USDC (Devnet)</option>
+                    <option value="USDC">USDC (Mainnet)</option>
+                    <option value="SOL">Native SOL</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <label>External Idempotency ID</label>
                   <input
-                    type="number"
-                    min={3}
-                    max={10}
-                    className="input"
-                    value={hops}
-                    onChange={(e) => setHops(Number(e.target.value))}
+                    className="input mono"
+                    value={externalId}
+                    onChange={(e) => setExternalId(e.target.value)}
                   />
                 </div>
                 <div className="field">
-                  <label>Arrival Window (seconds, 60–2592000)</label>
-                  <input
-                    type="number"
-                    min={60}
-                    max={2592000}
-                    className="input"
-                    value={arrivalSeconds}
-                    onChange={(e) => setArrivalSeconds(Number(e.target.value))}
-                  />
-                </div>
-              </div>
-            )}
-
-            {routingMode === "template" && (
-              <div className="field" style={{ marginBottom: 12 }}>
-                <label>Route Template ID</label>
-                <select
-                  className="select"
-                  value={selectedTemplateId}
-                  onChange={(e) => setSelectedTemplateId(Number(e.target.value))}
-                >
-                  {templates.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      #{t.id} — {t.name} ({t.route.hops.length} hops, {t.arrivalSeconds}s)
-                    </option>
-                  ))}
-                </select>
-              </div>
-            )}
-
-            {routingMode === "custom" && (
-              <div style={{ marginBottom: 14 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                  <span className="muted" style={{ fontSize: 12 }}>Custom Route Hops (min wait 20s)</span>
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() =>
-                      setCustomHops((prev) => [...prev, { bundle: "mix", waitSeconds: 180 }])
-                    }
+                  <label>Routing Strategy</label>
+                  <select
+                    className="select"
+                    value={routingMode}
+                    onChange={(e) => setRoutingMode(e.target.value as RoutingMode)}
                   >
-                    + Add Hop
-                  </button>
+                    <option value="auto">Auto Hops (3–10)</option>
+                    <option value="template">Saved Route Template</option>
+                    <option value="custom">Custom Route Hops</option>
+                  </select>
                 </div>
-                {customHops.map((h, idx) => (
-                  <div key={idx} className="field-row" style={{ marginBottom: 8 }}>
-                    <div className="field">
-                      <select
-                        className="select"
-                        value={"bundle" in h ? `bundle:${h.bundle}` : "wallet"}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setCustomHops((prev) =>
-                            prev.map((item, i) => {
-                              if (i !== idx) return item;
-                              if (val.startsWith("bundle:")) {
+              </div>
+
+              <div className="field" style={{ marginBottom: 12 }}>
+                <label>Source Owner Wallet (Signer &amp; Fee Payer)</label>
+                <input
+                  className="input mono"
+                  value={sourceOwner}
+                  onChange={(e) => setSourceOwner(e.target.value)}
+                />
+              </div>
+
+              {routingMode === "auto" && (
+                <div className="field-row">
+                  <div className="field">
+                    <label>Abstraction Hops (3–10)</label>
+                    <input
+                      type="number"
+                      min={3}
+                      max={10}
+                      className="input"
+                      value={hops}
+                      onChange={(e) => setHops(Number(e.target.value))}
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Arrival Window (seconds, 60–2592000)</label>
+                    <input
+                      type="number"
+                      min={60}
+                      max={2592000}
+                      className="input"
+                      value={arrivalSeconds}
+                      onChange={(e) => setArrivalSeconds(Number(e.target.value))}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {routingMode === "template" && (
+                <div className="field" style={{ marginBottom: 12 }}>
+                  <label>Route Template ID</label>
+                  <select
+                    className="select"
+                    value={selectedTemplateId}
+                    onChange={(e) => setSelectedTemplateId(Number(e.target.value))}
+                  >
+                    {templates.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        #{t.id} — {t.name} ({t.route.hops.length} hops, {t.arrivalSeconds}s)
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {routingMode === "custom" && (
+                <div style={{ marginBottom: 14 }}>
+                  <div className="section-header" style={{ marginBottom: 8 }}>
+                    <span className="muted" style={{ fontSize: 12 }}>Custom Route Hops (min wait 20s)</span>
+                    <button
+                      type="button"
+                      className="btn btn-xs"
+                      onClick={() =>
+                        setCustomHops((prev) => [...prev, { bundle: "mix", waitSeconds: 180 }])
+                      }
+                    >
+                      + Add Hop
+                    </button>
+                  </div>
+                  {customHops.map((h, idx) => (
+                    <div key={idx} className="field-row" style={{ marginBottom: 8 }}>
+                      <div className="field">
+                        <select
+                          className="select"
+                          value={"bundle" in h ? `bundle:${h.bundle}` : "wallet"}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setCustomHops((prev) =>
+                              prev.map((item, i) => {
+                                if (i !== idx) return item;
+                                if (val.startsWith("bundle:")) {
+                                  return {
+                                    bundle: val.replace("bundle:", "") as HopBundleId,
+                                    waitSeconds: item.waitSeconds
+                                  };
+                                }
                                 return {
-                                  bundle: val.replace("bundle:", "") as HopBundleId,
+                                  wallet: "DQTf1yf1YM4B48PqJyQ53SEWGDM6ib4YBV7P3wm2MCxj",
                                   waitSeconds: item.waitSeconds
                                 };
-                              }
-                              return {
-                                wallet: "DQTf1yf1YM4B48PqJyQ53SEWGDM6ib4YBV7P3wm2MCxj",
-                                waitSeconds: item.waitSeconds
-                              };
-                            })
-                          );
-                        }}
-                      >
-                        <option value="bundle:cex">Bundle: CEX</option>
-                        <option value="bundle:dex">Bundle: DEX</option>
-                        <option value="bundle:exchanges">Bundle: Exchanges</option>
-                        <option value="bundle:kol">Bundle: KOL</option>
-                        <option value="bundle:contracts">Bundle: Contracts (middle only)</option>
-                        <option value="bundle:mix">Bundle: Mix</option>
-                        <option value="wallet">Named Wallet</option>
-                      </select>
-                    </div>
-                    {"wallet" in h && (
+                              })
+                            );
+                          }}
+                        >
+                          <option value="bundle:cex">Bundle: CEX</option>
+                          <option value="bundle:dex">Bundle: DEX</option>
+                          <option value="bundle:exchanges">Bundle: Exchanges</option>
+                          <option value="bundle:kol">Bundle: KOL</option>
+                          <option value="bundle:contracts">Bundle: Contracts (middle only)</option>
+                          <option value="bundle:mix">Bundle: Mix</option>
+                          <option value="wallet">Named Wallet</option>
+                        </select>
+                      </div>
+                      {"wallet" in h && (
+                        <div className="field">
+                          <input
+                            className="input mono"
+                            value={h.wallet}
+                            onChange={(e) => {
+                              const w = e.target.value;
+                              setCustomHops((prev) =>
+                                prev.map((item, i) =>
+                                  i === idx ? { wallet: w, waitSeconds: item.waitSeconds } : item
+                                )
+                              );
+                            }}
+                          />
+                        </div>
+                      )}
                       <div className="field">
                         <input
-                          className="input mono"
-                          value={h.wallet}
+                          type="number"
+                          min={20}
+                          className="input"
+                          value={h.waitSeconds}
                           onChange={(e) => {
-                            const w = e.target.value;
+                            const waitSeconds = Number(e.target.value);
                             setCustomHops((prev) =>
-                              prev.map((item, i) =>
-                                i === idx ? { wallet: w, waitSeconds: item.waitSeconds } : item
-                              )
+                              prev.map((item, i) => (i === idx ? { ...item, waitSeconds } : item))
                             );
                           }}
                         />
                       </div>
-                    )}
-                    <div className="field">
-                      <input
-                        type="number"
-                        min={20}
-                        className="input"
-                        value={h.waitSeconds}
-                        onChange={(e) => {
-                          const waitSeconds = Number(e.target.value);
-                          setCustomHops((prev) =>
-                            prev.map((item, i) => (i === idx ? { ...item, waitSeconds } : item))
-                          );
-                        }}
-                      />
                     </div>
-                  </div>
-                ))}
+                  ))}
+                </div>
+              )}
+
+              <div className="section-header" style={{ margin: "14px 0 8px" }}>
+                <strong>
+                  Destinations — Total {totalBatchTokens} {selectedMint.symbol} ({plannedTranches.length}{" "}
+                  {plannedTranches.length === 1 ? "tranche" : "tranches"})
+                </strong>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={() =>
+                    setRecipients((prev) => [
+                      ...prev,
+                      {
+                        label: `Recipient ${prev.length + 1}`,
+                        wallet: "",
+                        amountTokens: "100"
+                      }
+                    ])
+                  }
+                >
+                  + Add Recipient
+                </button>
               </div>
-            )}
 
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", margin: "14px 0 8px" }}>
-              <strong>
-                Destinations — Total {totalBatchTokens} {selectedMint.symbol} ({plannedTranches.length} tranche)
-              </strong>
-              <button
-                type="button"
-                className="btn"
-                onClick={() =>
-                  setRecipients((prev) => [
-                    ...prev,
-                    {
-                      label: `Recipient ${prev.length + 1}`,
-                      wallet: "",
-                      amountTokens: "100"
-                    }
-                  ])
-                }
-              >
-                + Add Recipient
-              </button>
-            </div>
-
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Label</th>
-                  <th>Solana Wallet</th>
-                  <th style={{ width: 110 }}>Amount ({selectedMint.symbol})</th>
-                  <th style={{ width: 70 }} />
-                </tr>
-              </thead>
-              <tbody>
+              <div className="destinations-list" role="table" aria-label="Transfer Destinations">
+                <div className="destinations-header" role="row">
+                  <div role="columnheader">Label</div>
+                  <div role="columnheader">Solana Wallet</div>
+                  <div role="columnheader">Amount ({selectedMint.symbol})</div>
+                  <div role="columnheader" aria-label="Actions" />
+                </div>
                 {recipients.map((r, idx) => (
-                  <tr key={idx}>
-                    <td>
+                  <div key={idx} className="destination-row" role="row">
+                    <div className="destination-label" role="cell">
+                      <span className="mobile-field-label">Label</span>
                       <input
                         className="input"
-                        style={{ width: "100%" }}
+                        aria-label={`Recipient ${idx + 1} label`}
                         value={r.label ?? ""}
                         onChange={(e) => {
                           const val = e.target.value;
@@ -727,12 +829,13 @@ export function App(): React.ReactElement {
                           );
                         }}
                       />
-                    </td>
-                    <td>
+                    </div>
+                    <div className="destination-wallet" role="cell">
+                      <span className="mobile-field-label">Solana Wallet</span>
                       <input
                         className="input mono"
-                        style={{ width: "100%" }}
-                        placeholder="Solana pubkey"
+                        aria-label={`Recipient ${idx + 1} Solana wallet`}
+                        placeholder="Solana pubkey (base58)"
                         value={r.wallet}
                         onChange={(e) => {
                           const val = e.target.value;
@@ -741,11 +844,12 @@ export function App(): React.ReactElement {
                           );
                         }}
                       />
-                    </td>
-                    <td>
+                    </div>
+                    <div className="destination-amount" role="cell">
+                      <span className="mobile-field-label">Amount ({selectedMint.symbol})</span>
                       <input
                         className="input mono"
-                        style={{ width: "100%" }}
+                        aria-label={`Recipient ${idx + 1} amount in ${selectedMint.symbol}`}
                         value={r.amountTokens}
                         onChange={(e) => {
                           const val = e.target.value;
@@ -754,153 +858,158 @@ export function App(): React.ReactElement {
                           );
                         }}
                       />
-                    </td>
-                    <td>
+                    </div>
+                    <div className="destination-actions" role="cell">
                       <button
                         type="button"
                         className="btn btn-danger"
+                        aria-label={`Remove recipient ${idx + 1}`}
                         disabled={recipients.length <= 1}
                         onClick={() => setRecipients((prev) => prev.filter((_, i) => i !== idx))}
                       >
                         Del
                       </button>
-                    </td>
-                  </tr>
+                    </div>
+                  </div>
                 ))}
-              </tbody>
-            </table>
+              </div>
 
-            <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-              <button type="button" className="btn btn-primary" disabled={busy} onClick={handleEstimate}>
-                Quote Fees &amp; TRM Screening
-              </button>
-              <button
-                type="button"
-                className="btn btn-emerald"
-                disabled={busy || mode === "live"}
-                title={mode === "live" ? "Use CLI with SOLANA_PRIVATE_KEY for live tx signing" : ""}
-                onClick={handleSimulateFullPipeline}
-              >
-                Run Simulated Multi-Hop Pipeline
-              </button>
+              <div className="section-actions">
+                <button type="button" className="btn btn-primary" disabled={busy} onClick={handleEstimate}>
+                  Quote Fees &amp; TRM Screening
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-emerald"
+                  disabled={busy || mode === "live"}
+                  title={mode === "live" ? "Use CLI with SOLANA_PRIVATE_KEY for live tx signing" : ""}
+                  onClick={handleSimulateFullPipeline}
+                >
+                  Run Simulated Multi-Hop Pipeline
+                </button>
+              </div>
             </div>
-          </div>
 
-          <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-            <div className="card">
-              <h2>Fee Quote &amp; Revenue Share</h2>
-              {!estimate ? (
-                <p className="muted">
-                  Click <strong>Quote Fees &amp; TRM Screening</strong> to inspect tier selection, SOL upfront rent,
-                  TRM compliance fee, and 50/50 integrator revenue share.
-                </p>
-              ) : (
-                <div className="grid-3">
-                  <div>
-                    <div className="muted">Fee Tier</div>
-                    <div className="kpi-value">{estimate.tier}</div>
-                    <div className="muted">{estimate.percentFeeBps / 100}% ({estimate.priceSource})</div>
-                  </div>
-                  <div>
-                    <div className="muted">Your 50% Share</div>
-                    <div className="kpi-value" style={{ color: "var(--emerald)" }}>
-                      {formatRawToTokens(estimate.integratorPercentShare, selectedMint.decimals)} {selectedMint.symbol}
+            <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+              <div className="card">
+                <h2>Fee Quote &amp; Revenue Share</h2>
+                {!estimate ? (
+                  <p className="muted" style={{ margin: 0 }}>
+                    Click <strong>Quote Fees &amp; TRM Screening</strong> to inspect tier selection, SOL upfront rent,
+                    TRM compliance fee, and 50/50 integrator revenue share.
+                  </p>
+                ) : (
+                  <div className="grid-3">
+                    <div>
+                      <div className="muted">Fee Tier</div>
+                      <div className="kpi-value">{estimate.tier}</div>
+                      <div className="muted">{estimate.percentFeeBps / 100}% ({estimate.priceSource})</div>
                     </div>
-                    <div className="muted">Atomic on-chain payout</div>
-                  </div>
-                  <div>
-                    <div className="muted">Upfront SOL Budget</div>
-                    <div className="kpi-value">{lamportsToSol(estimate.sol.requiredSolUpFrontLamports)}</div>
-                    <div className="muted">
-                      TRM: {lamportsToSol(estimate.sol.breakdown.screeningFeeLamports)} · Refundable:{" "}
-                      {lamportsToSol(estimate.sol.refundableLamports)}
+                    <div>
+                      <div className="muted">Your 50% Share</div>
+                      <div className="kpi-value" style={{ color: "var(--emerald)" }}>
+                        {formatRawToTokens(estimate.integratorPercentShare, selectedMint.decimals)} {selectedMint.symbol}
+                      </div>
+                      <div className="muted">Atomic on-chain payout</div>
                     </div>
+                    <div>
+                      <div className="muted">Upfront SOL Budget</div>
+                      <div className="kpi-value">{lamportsToSol(estimate.sol.requiredSolUpFrontLamports)}</div>
+                      <div className="muted">
+                        TRM: {lamportsToSol(estimate.sol.breakdown.screeningFeeLamports)} · Refundable:{" "}
+                        {lamportsToSol(estimate.sol.refundableLamports)}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="card">
+                <h2>Strict Sequencing State Machine</h2>
+                <div className="pipeline-list">
+                  {pipeline.map((stage) => (
+                    <div key={stage.id} className={`pipeline-step ${stage.status}`}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontWeight: 600 }}>{stage.title}</div>
+                        <div className="muted" style={{ fontSize: 12 }}>
+                          {stage.detail}
+                        </div>
+                        {stage.signature && (
+                          <div className="mono" style={{ fontSize: 11, color: "var(--accent)", overflowWrap: "anywhere" }}>
+                            sig: {stage.signature}
+                          </div>
+                        )}
+                      </div>
+                      <span
+                        className={`badge ${
+                          stage.status === "done"
+                            ? "badge-ok"
+                            : stage.status === "active"
+                              ? "badge-info"
+                              : "badge-warn"
+                        }`}
+                      >
+                        {stage.status}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {activeTransfer && activeTransfer.destinations && (
+                <div className="card">
+                  <h3>
+                    Transfer #{activeTransfer.id} Payouts{" "}
+                    <span className="badge badge-ok">{activeTransfer.status}</span>
+                  </h3>
+                  <div className="table-wrap">
+                    <table className="table">
+                      <thead>
+                        <tr>
+                          <th>Wallet</th>
+                          <th>Net Raw</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {activeTransfer.destinations.map((d) => (
+                          <tr key={d.wallet}>
+                            <td className="mono" title={d.wallet}>
+                              {d.wallet.slice(0, 14)}...{d.wallet.slice(-6)}
+                            </td>
+                            <td className="mono">{d.amountRaw}</td>
+                            <td>
+                              <span className={`badge ${d.status === "paid" ? "badge-ok" : "badge-warn"}`}>
+                                {d.status}
+                              </span>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               )}
             </div>
+          </div>
 
-            <div className="card">
-              <h2>Strict Sequencing State Machine</h2>
-              <div className="pipeline-list">
-                {pipeline.map((stage) => (
-                  <div key={stage.id} className={`pipeline-step ${stage.status}`}>
-                    <div>
-                      <div style={{ fontWeight: 600 }}>{stage.title}</div>
-                      <div className="muted" style={{ fontSize: 12 }}>
-                        {stage.detail}
-                      </div>
-                      {stage.signature && (
-                        <div className="mono" style={{ fontSize: 11, color: "var(--accent)" }}>
-                          sig: {stage.signature}
-                        </div>
-                      )}
-                    </div>
-                    <span
-                      className={`badge ${
-                        stage.status === "done"
-                          ? "badge-ok"
-                          : stage.status === "active"
-                            ? "badge-info"
-                            : "badge-warn"
-                      }`}
-                    >
-                      {stage.status}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {activeTransfer && activeTransfer.destinations && (
-              <div className="card">
-                <h3>
-                  Transfer #{activeTransfer.id} Payouts{" "}
-                  <span className="badge badge-ok">{activeTransfer.status}</span>
-                </h3>
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>Wallet</th>
-                      <th>Net Raw</th>
-                      <th>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {activeTransfer.destinations.map((d) => (
-                      <tr key={d.wallet}>
-                        <td className="mono">{d.wallet.slice(0, 10)}...</td>
-                        <td className="mono">{d.amountRaw}</td>
-                        <td>
-                          <span className={`badge ${d.status === "paid" ? "badge-ok" : "badge-warn"}`}>
-                            {d.status}
-                          </span>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-
-            <div className="card">
-              <h3>Execution Telemetry Log</h3>
-              <div className="log-box">
-                {logs.length === 0 ? (
-                  <div className="muted">No events recorded yet.</div>
-                ) : (
-                  logs.map((line, i) => <div key={i}>{line}</div>)
-                )}
-              </div>
+          <div className="card" style={{ marginTop: 18 }}>
+            <h3>Execution Telemetry Log</h3>
+            <div className="log-box">
+              {logs.length === 0 ? (
+                <div className="muted">No events recorded yet. Run a quote or simulated pipeline to inspect execution telemetry.</div>
+              ) : (
+                logs.map((line, i) => <div key={i}>{line}</div>)
+              )}
             </div>
           </div>
-        </div>
+        </>
       )}
 
       {activeTab === "templates" && (
-        <div className="grid-2">
+        <div className="grid-2-templates">
           <div className="card">
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+            <div className="section-header">
               <h2 style={{ margin: 0 }}>Saved Route Templates ({templates.length}/100)</h2>
               {mode === "live" && (
                 <button type="button" className="btn" onClick={handleLoadLiveResources} disabled={busy}>
@@ -909,7 +1018,7 @@ export function App(): React.ReactElement {
               )}
             </div>
 
-            <div className="field-row">
+            <div className="template-form-row">
               <div className="field">
                 <label>Template Name</label>
                 <input
@@ -931,35 +1040,37 @@ export function App(): React.ReactElement {
               Save Current Custom Route as Template
             </button>
 
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Name</th>
-                  <th>Hops / Arrival</th>
-                  <th>Usable For</th>
-                </tr>
-              </thead>
-              <tbody>
-                {templates.map((t) => (
-                  <tr key={t.id}>
-                    <td className="mono">#{t.id}</td>
-                    <td>
-                      <strong>{t.name}</strong>
-                      <div className="muted">{t.description}</div>
-                    </td>
-                    <td className="mono">
-                      {t.route.hops.length} hops / {t.arrivalSeconds}s
-                    </td>
-                    <td>
-                      <span className="badge badge-ok">
-                        {t.usableFor.destinations ? "single + multi-dest" : "single"}
-                      </span>
-                    </td>
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Name &amp; Description</th>
+                    <th>Hops / Arrival</th>
+                    <th>Usable For</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {templates.map((t) => (
+                    <tr key={t.id}>
+                      <td className="mono nowrap">#{t.id}</td>
+                      <td>
+                        <strong>{t.name}</strong>
+                        <div className="template-desc">{t.description || "—"}</div>
+                      </td>
+                      <td className="mono nowrap">
+                        {t.route.hops.length} hops / {t.arrivalSeconds}s
+                      </td>
+                      <td className="nowrap">
+                        <span className="badge badge-ok">
+                          {t.usableFor.destinations ? "single + multi-dest" : "single"}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           <div className="card">
@@ -971,7 +1082,7 @@ export function App(): React.ReactElement {
             <div className="grid-3" style={{ marginBottom: 14 }}>
               {hopLibrary.bundles.map((b) => (
                 <div key={b.id} className="pipeline-step">
-                  <div>
+                  <div style={{ minWidth: 0 }}>
                     <div className="mono" style={{ fontWeight: 700 }}>{b.id}</div>
                     <div className="muted" style={{ fontSize: 11 }}>{b.categories.join(", ")}</div>
                   </div>
@@ -979,33 +1090,47 @@ export function App(): React.ReactElement {
                 </div>
               ))}
             </div>
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Label</th>
-                  <th>Category</th>
-                  <th>Address</th>
-                  <th>Can End Route</th>
-                </tr>
-              </thead>
-              <tbody>
-                {hopLibrary.wallets.map((w) => (
-                  <tr key={w.address}>
-                    <td>{w.label}</td>
-                    <td><span className="badge badge-info">{w.category}</span></td>
-                    <td className="mono">{w.address.slice(0, 12)}...</td>
-                    <td>{w.canEndRoute ? "yes" : "middle only"}</td>
+            <div className="table-wrap">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Label</th>
+                    <th>Category</th>
+                    <th>Address</th>
+                    <th>Can End Route</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {hopLibrary.wallets.map((w) => (
+                    <tr key={w.address}>
+                      <td className="nowrap">{w.label}</td>
+                      <td className="nowrap"><span className="badge badge-info">{w.category}</span></td>
+                      <td>
+                        <div className="pubkey-cell">
+                          <span className="mono pubkey-text" title={w.address}>{w.address}</span>
+                          <button
+                            type="button"
+                            className="btn btn-xs"
+                            aria-label={`Copy address for ${w.label}`}
+                            onClick={() => handleCopyText(w.address)}
+                          >
+                            {copiedValue === w.address ? "Copied" : "Copy"}
+                          </button>
+                        </div>
+                      </td>
+                      <td className="nowrap">{w.canEndRoute ? "yes" : "middle only"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
 
       {activeTab === "telemetry" && (
         <div className="card">
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <div className="section-header" style={{ marginBottom: 14 }}>
             <h2 style={{ margin: 0 }}>Integrator Usage &amp; Atomic Revenue Share</h2>
             {mode === "live" && (
               <button type="button" className="btn" onClick={handleLoadLiveResources} disabled={busy}>
@@ -1016,7 +1141,7 @@ export function App(): React.ReactElement {
           <div className="grid-3" style={{ marginBottom: 16 }}>
             <div className="pipeline-step">
               <div>
-                <div className="muted">Total / Completed Transfers</div>
+                <div className="muted">Completed / Total Transfers</div>
                 <div className="kpi-value">
                   {usage.completedTransfers} / {usage.totalTransfers}
                 </div>
@@ -1040,18 +1165,20 @@ export function App(): React.ReactElement {
                   USDC
                 </div>
               </div>
-              <span className="badge badge-info">{usage.isTestMode ? "test mode" : "live mode"}</span>
+              <span className={`badge ${isSimulatedOrDevnet ? "badge-warn" : "badge-ok"}`}>
+                {isSimulatedOrDevnet ? "Devnet / Simulated Mode" : "Mainnet Live Mode"}
+              </span>
             </div>
           </div>
-          <p className="muted">
-            MultiHopper splits the 0.50% percent fee 50/50 atomically inside route creation directly to your
-            registered rewards wallet (which must hold rent-exempt minimum SOL).
+          <p className="muted" style={{ marginBottom: 0 }}>
+            MultiHopper splits the 0.50% protocol fee (0.25% integrator share) 50/50 atomically inside route
+            creation directly to your registered rewards wallet (which must hold rent-exempt minimum SOL).
           </p>
         </div>
       )}
 
       {activeTab === "webhooks" && (
-        <div className="grid-2">
+        <div className="grid-2-even">
           <div className="card">
             <h2>HMAC-SHA256 Webhook Inspector</h2>
             <div className="field" style={{ marginBottom: 10 }}>
@@ -1070,6 +1197,7 @@ export function App(): React.ReactElement {
                 onChange={(e) => {
                   const ev = e.target.value as WebhookEventType;
                   setWebhookEvent(ev);
+                  setWebhookSignatureInput("");
                   setWebhookPayloadText(
                     JSON.stringify(
                       {
@@ -1109,27 +1237,85 @@ export function App(): React.ReactElement {
                 onChange={(e) => setWebhookSignatureInput(e.target.value)}
               />
             </div>
-            <button type="button" className="btn btn-primary" onClick={handleSignAndVerifyWebhook}>
-              Sign &amp; Verify Signature
-            </button>
+            <div className="section-actions" style={{ marginTop: 12 }}>
+              <button type="button" className="btn btn-primary" onClick={handleSignAndVerifyWebhook}>
+                Sign &amp; Verify Signature
+              </button>
+              <button type="button" className="btn" onClick={handleResetWebhookSample}>
+                Reset Sample
+              </button>
+            </div>
           </div>
 
           <div className="card">
-            <h2>Verification Output</h2>
-            {!webhookVerifyResult ? (
-              <p className="muted">
-                Test <span className="mono">x-multihopper-signature</span> verification against raw request bytes.
-              </p>
-            ) : (
+            <div className="section-header">
+              <h2 style={{ margin: 0 }}>Verification Output</h2>
+              {webhookVerifyResult && (
+                <span className={`badge ${webhookVerifyResult.ok ? "badge-ok" : "badge-err"}`}>
+                  {webhookVerifyResult.isSample
+                    ? "Sample Pre-Verified"
+                    : webhookVerifyResult.ok
+                      ? "Verified 200 OK"
+                      : "Rejected 401"}
+                </span>
+              )}
+            </div>
+
+            {webhookVerifyResult ? (
               <div>
-                <div className={`alert ${webhookVerifyResult.ok ? "" : "alert-err"}`}>
+                <div className={`alert ${webhookVerifyResult.ok ? "alert-ok" : "alert-err"}`}>
                   <strong>Status:</strong>{" "}
                   {webhookVerifyResult.ok ? "VALID HMAC-SHA256 SIGNATURE" : "SIGNATURE MISMATCH"}
+                  {webhookVerifyResult.isSample ? " (Pre-loaded sample payload)" : ""}
                 </div>
-                <div className="field">
-                  <label>Expected HMAC-SHA256 Digest</label>
+
+                <div className="kv-grid">
+                  <div className="kv-item">
+                    <div className="kv-label">Event Type</div>
+                    <div className="kv-value mono">{parsedWebhookPreview.event}</div>
+                  </div>
+                  <div className="kv-item">
+                    <div className="kv-label">Event ID</div>
+                    <div className="kv-value mono">{parsedWebhookPreview.id}</div>
+                  </div>
+                  <div className="kv-item">
+                    <div className="kv-label">Transfer ID</div>
+                    <div className="kv-value mono">{parsedWebhookPreview.transferId}</div>
+                  </div>
+                  <div className="kv-item">
+                    <div className="kv-label">Status / Phase</div>
+                    <div className="kv-value mono">{parsedWebhookPreview.statusPhase}</div>
+                  </div>
+                </div>
+
+                <div className="field" style={{ marginBottom: 12 }}>
+                  <div className="section-header" style={{ marginBottom: 4 }}>
+                    <label>Expected HMAC-SHA256 Digest</label>
+                    <button
+                      type="button"
+                      className="btn btn-xs"
+                      onClick={() => handleCopyText(webhookVerifyResult.expected)}
+                    >
+                      {copiedValue === webhookVerifyResult.expected ? "Copied" : "Copy Digest"}
+                    </button>
+                  </div>
                   <div className="log-box">{webhookVerifyResult.expected}</div>
                 </div>
+
+                <div className="field">
+                  <label>Header &amp; Raw-Byte Contract</label>
+                  <div className="log-box">
+                    <div>header: x-multihopper-signature: {webhookVerifyResult.expected.slice(0, 24)}...</div>
+                    <div>encoding: UTF-8 raw request bytes (do not re-serialize JSON)</div>
+                    <div>comparison: constant-time hex digest match (64 chars)</div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div>
+                <p className="muted">
+                  Computing HMAC-SHA256 sample digest for <span className="mono">x-multihopper-signature</span>...
+                </p>
               </div>
             )}
           </div>
