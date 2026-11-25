@@ -1,0 +1,30 @@
+{
+  "name": "hopstream-multihopper",
+  "version": "1.0.0",
+  "private": true,
+  "description": "HopStream Treasury & Agentic Multi-Send — MultiHopper Solana integration SDK, orchestration state machine, HMAC webhook server, CLI, and React dashboard",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build:lib": "tsc -p tsconfig.build.json",
+    "build:web": "vite build",
+    "build": "npm run build:lib && npm run build:web",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/tests/**/*.test.js",
+    "cli": "node dist/src/cli.js",
+    "webhook": "node dist/src/webhook/cli.js"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.7"
+  }
+}

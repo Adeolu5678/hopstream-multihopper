@@ -1,0 +1,9 @@
+node_modules/
+dist/
+dist-test/
+dist-web/
+.vercel/
+.env
+.env.*
+!.env.example
+*.log
